@@ -62,6 +62,11 @@
       options.headers || {}
     );
     return fetch(API_BASE + path, options).then(function (res) {
+      // Si el servidor responde con HTML en lugar de JSON (e.g. hosting estático mal configurado)
+      var cType = res.headers.get("content-type") || "";
+      if (res.ok && cType.indexOf("application/json") === -1) {
+        throw new Error("Error de servidor: La API no devolvió JSON. ¿El backend de Python está ejecutándose?");
+      }
       return res
         .json()
         .catch(function () { return {}; })
