@@ -2,7 +2,16 @@
 (function () {
   "use strict";
 
-  var API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+  // El backend (FastAPI) no puede ejecutarse en GitHub Pages (hosting estatico).
+  // Resolucion: <meta name="adeline-api-base"> > file:// local > mismo origen.
+  function resolveApiBase() {
+    var meta = document.querySelector('meta[name="adeline-api-base"]');
+    var configured = meta && meta.content ? meta.content.trim() : "";
+    if (configured) { return configured.replace(/\/+$/, ""); }
+    if (location.protocol === "file:") { return "http://127.0.0.1:8000"; }
+    return "";
+  }
+  var API_BASE = resolveApiBase();
   var TOKEN_KEY = "adeline_admin_token";
   var token = sessionStorage.getItem(TOKEN_KEY) || "";
 
@@ -26,6 +35,22 @@
   function api(path) {
     return fetch(API_BASE + path, {
       method: "GET",
+      headers: { Accept: "application/json", "X-Admin-Token": token },
+    }).then(function (res) {
+      if (res.status === 401) { throw new Error("401"); }
+      return res.json().then(function (body) {
+        if (!res.ok) {
+          throw new Error((body && body.detail) || "Error " + res.status);
+        }
+        return body;
+      });
+    });
+  }
+
+  // Acciones de escritura del panel (validar / reenviar). Misma cabecera segura.
+  function apiSend(path, method) {
+    return fetch(API_BASE + path, {
+      method: method || "POST",
       headers: { Accept: "application/json", "X-Admin-Token": token },
     }).then(function (res) {
       if (res.status === 401) { throw new Error("401"); }
@@ -95,17 +120,22 @@
 
   // -------------------- listado --------------------
   function badge(status) {
-    var cls = status === "paid" ? "paid" : "pending";
-    var label = status === "paid" ? "Pagado" : "Pendiente";
-    return '<span class="badge ' + cls + '">' + label + "</span>";
+    var map = {
+      paid: { cls: "paid", label: "Validado" },
+      awaiting_validation: { cls: "pending", label: "Por validar" },
+      pending: { cls: "pending", label: "Pendiente" },
+    };
+    var m = map[status] || map.pending;
+    return '<span class="badge ' + m.cls + '">' + m.label + "</span>";
   }
 
   function loadBookings() {
     api("/api/admin/bookings")
       .then(function (rows) {
         var paid = rows.filter(function (r) { return r.status === "paid"; }).length;
+        var review = rows.filter(function (r) { return r.status === "awaiting_validation"; }).length;
         $("statsLine").textContent =
-          rows.length + " consultas · " + paid + " pagadas";
+          rows.length + " consultas · " + review + " por validar · " + paid + " validadas";
         var body = $("bookingsBody");
         if (!rows.length) {
           body.innerHTML = '<tr><td colspan="7" class="muted">Aún no hay consultas.</td></tr>';
@@ -187,40 +217,88 @@
 
   function openDetail(id) {
     api("/api/admin/bookings/" + encodeURIComponent(id))
-      .then(function (b) {
-        $("mName").textContent = b.full_name;
-        var video = b.video_url
-          ? '<a href="' + esc(b.video_url) + '" target="_blank" rel="noopener" class="btn btn-primary" style="margin-top:8px">🎥 Entrar a la videollamada</a>'
-          : '<p class="muted">Enlace pendiente de pago.</p>';
-
-        var left =
-          '<div class="kv"><span class="k">Referencia</span><span>' + esc(b.reference) + "</span></div>" +
-          '<div class="kv"><span class="k">Correo</span><span>' + esc(b.email) + "</span></div>" +
-          '<div class="kv"><span class="k">Nacimiento</span><span>' + fmtBirth(b.birth_date) +
-          (b.birth_time ? " · " + esc(b.birth_time) : " · hora no indicada") + "</span></div>" +
-          '<div class="kv"><span class="k">Lugar</span><span>' + esc(b.birth_place) + "</span></div>" +
-          '<div class="kv"><span class="k">Plan</span><span>' + esc(b.amount) + " " + esc(b.currency) +
-          " (cobro " + esc(b.charge_amount) + " " + esc(b.charge_currency) + ")</span></div>" +
-          '<div class="kv"><span class="k">Estado</span><span>' + badge(b.status) + "</span></div>" +
-          '<div class="kv"><span class="k">Pago</span><span>' + esc(b.payment_method || "—") +
-          (b.paypal_order_id ? " · " + esc(b.paypal_order_id) : "") + "</span></div>" +
-          '<div class="kv"><span class="k">Pagada</span><span>' + fmtDate(b.paid_at) + "</span></div>" +
-          '<div style="margin-top:12px">' + video + "</div>" +
-          '<h3 style="color:var(--lilac);margin:20px 0 8px;font-size:1rem;letter-spacing:.1em">CARTA NATAL</h3>' +
-          chartBlock(b.chart);
-
-        var right =
-          '<h3 style="color:var(--lilac);margin:0 0 8px;font-size:1rem;letter-spacing:.1em">INFORME PARA LA SESIÓN</h3>' +
-          '<div class="report-box">' + esc(b.report_text || "El informe se genera al confirmar el pago.") + "</div>";
-
-        $("modalBody").innerHTML =
-          '<div class="detail-grid"><div>' + left + "</div><div>" + right + "</div></div>";
-        $("detailModal").classList.remove("hidden");
-      })
+      .then(renderDetail)
       .catch(function (err) {
         if (err.message === "401") { logout(); return; }
         alertBox($("dashAlert"), err.message || "No se pudo abrir el detalle.");
       });
+  }
+
+  function doValidate(id, btn) {
+    btn.disabled = true; btn.textContent = "Validando…";
+    apiSend("/api/admin/bookings/" + encodeURIComponent(id) + "/validate", "POST")
+      .then(function (b) { renderDetail(b); loadBookings(); })
+      .catch(function (err) {
+        if (err.message === "401") { logout(); return; }
+        btn.disabled = false; btn.textContent = "✓ Validar pago y enviar enlace";
+        alertBox($("modalActionAlert") || $("dashAlert"), err.message || "No se pudo validar.");
+      });
+  }
+
+  function doResend(id, btn) {
+    btn.disabled = true; btn.textContent = "Reenviando…";
+    apiSend("/api/admin/bookings/" + encodeURIComponent(id) + "/resend", "POST")
+      .then(function (b) { renderDetail(b); loadBookings(); })
+      .catch(function (err) {
+        if (err.message === "401") { logout(); return; }
+        btn.disabled = false; btn.textContent = "✉ Reenviar enlace por correo";
+        alertBox($("modalActionAlert") || $("dashAlert"), err.message || "No se pudo reenviar.");
+      });
+  }
+
+  function renderDetail(b) {
+    $("mName").textContent = b.full_name;
+    var validated = b.status === "paid";
+
+    var emailLine = b.link_emailed_at
+      ? "Enviado " + fmtDate(b.link_emailed_at) + (b.email_status ? " · " + esc(b.email_status) : "")
+      : (b.email_status ? esc(b.email_status) : "—");
+
+    var video = b.video_url
+      ? '<a href="' + esc(b.video_url) + '" target="_blank" rel="noopener" class="btn btn-ghost" style="margin-top:8px">🎥 Abrir sala (solo AdelineTarot)</a>'
+      : '<p class="muted">El enlace se genera al validar el pago.</p>';
+
+    var actions =
+      '<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">' +
+      (validated
+        ? '<button class="btn btn-primary" id="btnResend">✉ Reenviar enlace por correo</button>'
+        : '<button class="btn btn-primary" id="btnValidate">✓ Validar pago y enviar enlace</button>') +
+      "</div>" +
+      '<div id="modalActionAlert" style="margin-top:10px"></div>';
+
+    var left =
+      '<div class="kv"><span class="k">Referencia</span><span>' + esc(b.reference) + "</span></div>" +
+      '<div class="kv"><span class="k">Correo</span><span>' + esc(b.email) + "</span></div>" +
+      '<div class="kv"><span class="k">Nacimiento</span><span>' + fmtBirth(b.birth_date) +
+      (b.birth_time ? " · " + esc(b.birth_time) : " · hora no indicada") + "</span></div>" +
+      '<div class="kv"><span class="k">Lugar</span><span>' + esc(b.birth_place) + "</span></div>" +
+      '<div class="kv"><span class="k">Plan</span><span>' + esc(b.amount) + " " + esc(b.currency) +
+      " (cobro " + esc(b.charge_amount) + " " + esc(b.charge_currency) + ")</span></div>" +
+      '<div class="kv"><span class="k">Estado</span><span>' + badge(b.status) + "</span></div>" +
+      '<div class="kv"><span class="k">Pago declarado</span><span>' +
+      (b.payment_method ? esc(b.payment_method) : "—") +
+      (b.paypal_order_id ? " · " + esc(b.paypal_order_id) : "") +
+      (b.payment_claimed_at ? " · " + fmtDate(b.payment_claimed_at) : "") + "</span></div>" +
+      '<div class="kv"><span class="k">Validada</span><span>' + fmtDate(b.paid_at) + "</span></div>" +
+      '<div class="kv"><span class="k">Correo enlace</span><span>' + emailLine + "</span></div>" +
+      actions +
+      '<div style="margin-top:12px">' + video + "</div>" +
+      '<h3 style="color:var(--lilac);margin:20px 0 8px;font-size:1rem;letter-spacing:.1em">CARTA NATAL</h3>' +
+      chartBlock(b.chart);
+
+    var right =
+      '<h3 style="color:var(--lilac);margin:0 0 8px;font-size:1rem;letter-spacing:.1em">INFORME PARA LA SESIÓN</h3>' +
+      '<div class="report-box">' + esc(b.report_text || "El informe se genera al validar el pago.") + "</div>";
+
+    $("modalBody").innerHTML =
+      '<div class="detail-grid"><div>' + left + "</div><div>" + right + "</div></div>";
+
+    var vBtn = $("btnValidate");
+    if (vBtn) { vBtn.addEventListener("click", function () { doValidate(b.id, vBtn); }); }
+    var rBtn = $("btnResend");
+    if (rBtn) { rBtn.addEventListener("click", function () { doResend(b.id, rBtn); }); }
+
+    $("detailModal").classList.remove("hidden");
   }
 
   function closeModal() { $("detailModal").classList.add("hidden"); }

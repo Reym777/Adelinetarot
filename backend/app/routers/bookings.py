@@ -7,7 +7,6 @@ are generated only after payment is confirmed.
 """
 from __future__ import annotations
 
-import json
 import secrets
 from datetime import datetime, timezone
 from typing import Dict
@@ -15,11 +14,9 @@ from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from ..astrology import compute_chart
 from ..config import settings
 from ..database import get_db
 from ..models import Booking
-from ..report import build_report
 from ..schemas import (
     BookingCreate,
     BookingCreateResponse,
@@ -51,6 +48,14 @@ def _paypal_me_url(charge_currency: str, charge_amount: float) -> str:
     return f"https://paypal.me/{settings.paypal_me_handle}/{amount}{charge_currency}"
 
 
+def _payment_url(charge_currency: str, charge_amount: float) -> str:
+    """Real destination for the "Pay" button: an explicit configured link
+    (e.g. a Stripe Payment Link) when provided, otherwise a PayPal.Me URL."""
+    if settings.payment_link:
+        return settings.payment_link
+    return _paypal_me_url(charge_currency, charge_amount)
+
+
 def _make_reference() -> str:
     stamp = datetime.now(timezone.utc).strftime("%y%m%d")
     return f"ADT-{stamp}-{secrets.token_hex(3).upper()}"
@@ -69,7 +74,8 @@ def create_booking(
             reference="ADT-IGNORED", public_token="", status="pending",
             plan=payload.plan, currency="MXN", amount=0.0,
             charge_currency="MXN", charge_amount=0.0,
-            paypal_client_id="", paypal_me_url="", message="Recibido.",
+            paypal_client_id="", paypal_me_url="", payment_url="", payment_note="",
+            message="Recibido.",
         )
 
     pricing = _plan_pricing(payload.plan)
@@ -103,13 +109,23 @@ def create_booking(
         charge_amount=booking.charge_amount,
         paypal_client_id=settings.paypal_client_id,
         paypal_me_url=_paypal_me_url(booking.charge_currency, booking.charge_amount),
-        message="Datos recibidos. Completa el pago para generar tu enlace de videollamada.",
+        payment_url=_payment_url(booking.charge_currency, booking.charge_amount),
+        payment_note=settings.payment_note,
+        message="Datos recibidos. Completa el pago para confirmar tu consulta.",
     )
 
 
 def _status_message(booking: Booking) -> str:
     if booking.status == "paid":
-        return "Pago confirmado. Tu enlace de videollamada está listo."
+        return (
+            "Pago validado. Te hemos enviado el enlace de la videollamada a tu "
+            "correo."
+        )
+    if booking.status == "awaiting_validation":
+        return (
+            "Hemos registrado tu pago. En cuanto AdelineTarot confirme la "
+            "recepcion, recibiras el enlace de la videollamada en tu correo."
+        )
     return "Pendiente de pago."
 
 
@@ -121,6 +137,13 @@ def confirm_payment(
     _: None = Depends(write_rate_limit),
     db: Session = Depends(get_db),
 ) -> BookingStatus:
+    """Register a *payment claim* from the client.
+
+    Crucially, this does NOT generate or reveal the video link. The link is
+    created and emailed only when AdelineTarot validates the payment from the
+    admin panel. Here we just move the booking to ``awaiting_validation`` and
+    record how the client says they paid.
+    """
     if payload.website:  # honeypot
         raise HTTPException(status_code=404, detail="No encontrado")
 
@@ -130,38 +153,18 @@ def confirm_payment(
     if not booking:
         raise HTTPException(status_code=404, detail="No encontrado")
 
-    # Idempotent: if already paid, just return the existing deliverable.
-    if booking.status == "paid":
-        return BookingStatus(
-            reference=booking.reference, full_name=booking.full_name,
-            status=booking.status, plan=booking.plan, currency=booking.currency,
-            amount=booking.amount, video_url=booking.video_url,
-            message=_status_message(booking),
-        )
-
-    # Generate the unique video room shared by the consultant and AdelineTarot.
-    room = f"{settings.video_room_prefix}-{secrets.token_urlsafe(9)}"
-    chart = compute_chart(
-        booking.full_name, booking.birth_date, booking.birth_time,
-        booking.birth_place,
-    )
-    report = build_report(booking.full_name, booking.birth_date, chart)
-
-    booking.status = "paid"
-    booking.payment_method = payload.method
-    booking.paypal_order_id = payload.paypal_order_id
-    booking.paid_at = datetime.now(timezone.utc)
-    booking.video_room = room
-    booking.video_url = f"{settings.video_base_url}/{room}"
-    booking.chart_json = json.dumps(chart, ensure_ascii=False, default=str)
-    booking.report_text = report
-    db.commit()
+    # Already validated: nothing to do, never echo the link back to the client.
+    if booking.status != "paid":
+        booking.status = "awaiting_validation"
+        booking.payment_method = payload.method
+        booking.paypal_order_id = payload.paypal_order_id
+        booking.payment_claimed_at = datetime.now(timezone.utc)
+        db.commit()
 
     return BookingStatus(
         reference=booking.reference, full_name=booking.full_name,
         status=booking.status, plan=booking.plan, currency=booking.currency,
-        amount=booking.amount, video_url=booking.video_url,
-        message=_status_message(booking),
+        amount=booking.amount, message=_status_message(booking),
     )
 
 
@@ -176,10 +179,9 @@ def get_status(
     )
     if not booking:
         raise HTTPException(status_code=404, detail="No encontrado")
+    # The video link is never exposed here — it is emailed after validation.
     return BookingStatus(
         reference=booking.reference, full_name=booking.full_name,
         status=booking.status, plan=booking.plan, currency=booking.currency,
-        amount=booking.amount,
-        video_url=booking.video_url if booking.status == "paid" else None,
-        message=_status_message(booking),
+        amount=booking.amount, message=_status_message(booking),
     )

@@ -47,3 +47,32 @@ def init_db() -> None:
     from . import models  # noqa: F401  (register models on the metadata)
 
     Base.metadata.create_all(bind=engine)
+    _ensure_sqlite_columns()
+
+
+def _ensure_sqlite_columns() -> None:
+    """Lightweight forward migration for SQLite.
+
+    ``create_all`` never alters existing tables, so a database created by an
+    earlier version is missing the newer payment-workflow columns. Add any that
+    are absent (no-op when already present, or when not using SQLite).
+    """
+    if not settings.database_url.startswith("sqlite"):
+        return
+
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "bookings" not in inspector.get_table_names():
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("bookings")}
+    needed = {
+        "payment_claimed_at": "DATETIME",
+        "link_emailed_at": "DATETIME",
+        "email_status": "VARCHAR(160)",
+    }
+    with engine.begin() as conn:
+        for name, ddl in needed.items():
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE bookings ADD COLUMN {name} {ddl}"))

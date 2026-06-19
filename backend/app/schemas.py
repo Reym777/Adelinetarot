@@ -80,6 +80,8 @@ class BookingCreateResponse(BaseModel):
     charge_amount: float
     paypal_client_id: str
     paypal_me_url: str
+    payment_url: str
+    payment_note: str
     message: str
 
 
@@ -103,7 +105,11 @@ class PaymentConfirm(StrictModel):
 
 
 # --------------------------------------------------------------------------- #
-# Client-facing status / deliverable
+# Client-facing status
+#
+# Deliberately omits the video link: it is delivered to the client ONLY by
+# email, and only after AdelineTarot validates the payment. The client API
+# never exposes the room URL.
 # --------------------------------------------------------------------------- #
 class BookingStatus(BaseModel):
     reference: str
@@ -112,7 +118,6 @@ class BookingStatus(BaseModel):
     plan: str
     currency: str
     amount: float
-    video_url: Optional[str] = None
     message: str
 
 
@@ -140,6 +145,9 @@ class AdminBookingDetail(AdminBookingSummary):
     charge_amount: float
     payment_method: Optional[str] = None
     paypal_order_id: Optional[str] = None
+    payment_claimed_at: Optional[datetime] = None
+    link_emailed_at: Optional[datetime] = None
+    email_status: Optional[str] = None
     video_url: Optional[str] = None
     video_room: Optional[str] = None
     chart: Optional[dict] = None

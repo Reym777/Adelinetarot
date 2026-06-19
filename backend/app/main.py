@@ -60,7 +60,7 @@ app.add_middleware(
 app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=settings.allowed_hosts,
+    allowed_hosts=settings.trusted_hosts,
 )
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -96,6 +96,7 @@ def public_config() -> dict:
         },
         "paypal_me_handle": settings.paypal_me_handle,
         "paypal_enabled": bool(settings.paypal_client_id),
+        "mail_enabled": settings.mail_enabled,
     }
 
 
@@ -117,10 +118,12 @@ if settings.serve_frontend and (settings.frontend_path / "index.html").exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     @app.get("/", include_in_schema=False)
+    @app.get("/index.html", include_in_schema=False)
     def index() -> FileResponse:
         return FileResponse(frontend / "index.html")
 
     @app.get("/admin", include_in_schema=False)
+    @app.get("/admin.html", include_in_schema=False)
     def admin_page() -> FileResponse:
         return FileResponse(frontend / "admin.html")
 

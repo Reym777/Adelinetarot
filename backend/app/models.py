@@ -45,6 +45,11 @@ class Booking(Base):
     paypal_order_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     payment_method: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When the client declared the payment (claim) vs. when AdelineTarot validated
+    # it (paid_at). The video link is only created/sent at validation time.
+    payment_claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    link_emailed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_status: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
 
     # Deliverables (generated on payment)
     video_room: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)

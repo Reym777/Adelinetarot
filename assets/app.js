@@ -2,13 +2,30 @@
 (function () {
   "use strict";
 
-  // Mismo origen cuando lo sirve el backend; respaldo en file://
-  var API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+  // El backend (FastAPI) no puede ejecutarse en GitHub Pages (hosting estatico).
+  // Resolucion: <meta name="adeline-api-base"> > file:// local > mismo origen.
+  function resolveApiBase() {
+    var meta = document.querySelector('meta[name="adeline-api-base"]');
+    var configured = meta && meta.content ? meta.content.trim() : "";
+    if (configured) { return configured.replace(/\/+$/, ""); }
+    if (location.protocol === "file:") { return "http://127.0.0.1:8000"; }
+    return "";
+  }
+  var API_BASE = resolveApiBase();
+
+  // Aviso para el desarrollador: GitHub Pages no ejecuta el backend.
+  if (!API_BASE && !/^(localhost|127\.0\.0\.1|\[?::1\]?)$/.test(location.hostname)) {
+    console.warn(
+      "[AdelineTarot] Sin backend configurado. En GitHub Pages define " +
+      '<meta name="adeline-api-base" content="https://tu-backend"> con la URL publica del backend.'
+    );
+  }
 
   var state = {
     publicToken: "",
     reference: "",
     fullName: "",
+    email: "",
     birthDate: "",
     plan: "mxn",
     currency: "MXN",
@@ -17,6 +34,8 @@
     chargeAmount: 100,
     paypalClientId: "",
     paypalMeUrl: "",
+    paymentUrl: "",
+    paymentNote: "",
     paid: false,
   };
 
@@ -134,6 +153,7 @@
         state.publicToken = res.public_token;
         state.reference = res.reference;
         state.fullName = payload.full_name;
+        state.email = payload.email;
         state.birthDate = payload.birth_date;
         state.currency = res.currency;
         state.amount = res.amount;
@@ -141,6 +161,8 @@
         state.chargeAmount = res.charge_amount;
         state.paypalClientId = res.paypal_client_id;
         state.paypalMeUrl = res.paypal_me_url;
+        state.paymentUrl = res.payment_url || res.paypal_me_url || "";
+        state.paymentNote = res.payment_note || "";
         goToPayment();
       })
       .catch(function (err) {
@@ -163,7 +185,16 @@
     $("payRef").textContent = state.reference;
 
     var link = $("paypalMeLink");
-    link.href = state.paypalMeUrl || "#";
+    var payUrl = state.paymentUrl || state.paypalMeUrl || "";
+    if (payUrl) {
+      link.href = payUrl;
+      link.classList.remove("hidden");
+    } else {
+      link.classList.add("hidden");
+    }
+
+    var payNote = $("payNote");
+    if (payNote) { payNote.textContent = state.paymentNote || ""; }
 
     var note = $("paypalNote");
     note.innerHTML = "";
@@ -173,7 +204,7 @@
     } else {
       alertBox(
         note,
-        "Pago en vivo de PayPal no configurado. Usa <strong>PayPal.Me</strong> y luego pulsa “Ya pagué”.",
+        "Pulsa <strong>Pagar ahora</strong> para completar el pago y luego “He realizado el pago”.",
         "ok"
       );
     }
@@ -222,7 +253,7 @@
             },
             onApprove: function (data, actions) {
               return actions.order.capture().then(function (details) {
-                confirmPayment("paypal", (details && details.id) || data.orderID);
+                claimPayment("paypal", (details && details.id) || data.orderID);
               });
             },
             onError: function () {
@@ -236,13 +267,13 @@
       });
   }
 
-  function confirmPayment(method, orderId) {
+  function claimPayment(method, orderId) {
     if (state.paid) { return; }
     var alertC = $("payAlert");
     clearAlert(alertC);
     var btn = $("confirmPaidBtn");
     btn.disabled = true;
-    btn.textContent = "Verificando…";
+    btn.textContent = "Registrando…";
 
     api("/api/bookings/" + encodeURIComponent(state.publicToken) + "/pay", {
       method: "POST",
@@ -250,25 +281,28 @@
     })
       .then(function (res) {
         state.paid = true;
-        showConfirmation(res);
+        showPending(res);
       })
       .catch(function (err) {
-        alertBox(alertC, err.message || "No se pudo confirmar el pago.");
+        alertBox(alertC, err.message || "No se pudo registrar el pago.");
       })
       .finally(function () {
         btn.disabled = false;
-        btn.textContent = "Ya pagué — generar mi enlace";
+        btn.textContent = "He realizado el pago";
       });
   }
 
-  // -------------------- confirmación --------------------
-  function showConfirmation(res) {
+  // -------------------- confirmación (pendiente de validación) --------------------
+  function showPending(res) {
     $("stepPay").classList.add("hidden");
     $("stepDone").classList.remove("hidden");
 
-    $("videoRoom").textContent = res.video_url || "";
-    var enter = $("enterCall");
-    enter.href = res.video_url || "#";
+    var nameEl = $("doneName");
+    if (nameEl) { nameEl.textContent = state.fullName || ""; }
+    var emailEl = $("doneEmail");
+    if (emailEl) { emailEl.textContent = state.email || "tu correo"; }
+    var refEl = $("doneRef");
+    if (refEl) { refEl.textContent = (res && res.reference) || state.reference || ""; }
 
     if (state.birthDate) {
       var sign = sunSign(state.birthDate);
@@ -283,7 +317,7 @@
   function wireControls() {
     $("bookingForm").addEventListener("submit", handleSubmit);
     $("confirmPaidBtn").addEventListener("click", function () {
-      confirmPayment("paypalme", null);
+      claimPayment("paypalme", null);
     });
     $("backToForm").addEventListener("click", function (e) {
       e.preventDefault();

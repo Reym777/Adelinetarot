@@ -6,6 +6,7 @@ development and production by changing the environment only.
 """
 from __future__ import annotations
 
+import os
 import secrets
 from functools import lru_cache
 from pathlib import Path
@@ -73,11 +74,32 @@ class Settings(BaseSettings):
     # in-page PayPal buttons. The PayPal.Me handle powers the manual fallback.
     paypal_client_id: str = ""
     paypal_me_handle: str = "adelinetarot"
+    # Optional override: a ready-made payment destination (e.g. a Stripe Payment
+    # Link or a custom PayPal.Me). When set it is used as-is for the "Pay" button
+    # instead of building a PayPal.Me URL from the handle.
+    payment_link: str = ""
+    # Extra instructions shown on the payment step (bank transfer, Yape/Plin…).
+    payment_note: str = ""
     # Authoritative plan catalogue (currency -> amount). Never trust the client.
     price_mxn: float = 100.0
     price_pen: float = 20.0
     # PayPal cannot settle in PEN; the sol plan is charged as this USD value.
     price_pen_as_usd: float = 6.0
+
+    # Email (SMTP) — the private video link is delivered ONLY by email, and only
+    # after AdelineTarot validates the payment. Credentials come from the
+    # environment exclusively (never hardcoded). Leave smtp_host empty to disable
+    # sending (the admin panel then shows that mail is not configured).
+    business_name: str = "AdelineTarot"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""            # defaults to smtp_user when empty
+    smtp_use_tls: bool = True      # STARTTLS (port 587)
+    smtp_use_ssl: bool = False     # implicit TLS (port 465)
+    smtp_timeout: int = 20
+    mail_reply_to: str = ""
 
     @field_validator("cors_origins", "allowed_hosts", mode="before")
     @classmethod
@@ -95,11 +117,38 @@ class Settings(BaseSettings):
         return p
 
     @property
+    def trusted_hosts(self) -> List[str]:
+        """allowed_hosts augmented with the PaaS external hostname.
+
+        Render (and similar hosts) expose the public hostname via an env var.
+        Trusting it automatically means a deploy works out of the box without
+        hardcoding the domain, while the configured default stays restrictive.
+        """
+        hosts = list(self.allowed_hosts)
+        if "*" in hosts:
+            return hosts
+        for var in ("RENDER_EXTERNAL_HOSTNAME", "WEBSITE_HOSTNAME"):
+            external = os.environ.get(var, "").strip()
+            if external and external not in hosts:
+                hosts.append(external)
+        return hosts
+
+    @property
     def resolved_admin_token(self) -> str:
         """Return the configured admin token, generating one if unset."""
         if not self.admin_token:
             object.__setattr__(self, "admin_token", secrets.token_urlsafe(24))
         return self.admin_token
+
+    @property
+    def effective_sender(self) -> str:
+        """From address used for outgoing email (falls back to the SMTP user)."""
+        return (self.smtp_from or self.smtp_user).strip()
+
+    @property
+    def mail_enabled(self) -> bool:
+        """True when SMTP is configured enough to attempt sending."""
+        return bool(self.smtp_host and self.effective_sender)
 
 
 @lru_cache
