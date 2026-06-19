@@ -191,6 +191,21 @@
           <p class="pay-sub">Para <span id="payName" class="gold"></span> · Ref. <span id="payRef"></span></p>
 
           <div class="paypal-box">
+            <div id="stripeBox" class="hidden">
+              <button type="button" class="btn btn-primary btn-block" id="stripeBtn">
+                💳 Pagar con tarjeta · Apple Pay · Google Pay
+              </button>
+              <p class="hint center" style="margin:8px 0 0">
+                Pago seguro con Stripe. Apple Pay y Google Pay aparecen
+                automáticamente en dispositivos compatibles.
+              </p>
+              <div class="divider">o</div>
+            </div>
+            <div id="walletButtons" class="wallet-buttons hidden">
+              <div id="applepay-button" class="wallet-btn hidden"></div>
+              <div id="googlepay-button" class="wallet-btn hidden"></div>
+              <div class="divider">o</div>
+            </div>
             <div id="paypal-buttons"></div>
             <div id="paypalNote"></div>
 

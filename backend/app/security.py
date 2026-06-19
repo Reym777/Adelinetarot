@@ -44,18 +44,24 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "geolocation=(), microphone=(), camera=()",
         )
         headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-        # CSP: the frontend loads the PayPal JS SDK and opens Jitsi/PayPal in
-        # new tabs, so those origins are allowed for scripts/frames/connections.
+        # CSP: the frontend loads the PayPal JS SDK (buttons + Apple Pay /
+        # Google Pay) and opens Jitsi/PayPal in new tabs, so those origins are
+        # allowed for scripts/frames/connections.
         headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; "
             "img-src 'self' data: blob: https:; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
+            "https://applepay.cdn-apple.com; "
             "font-src 'self' data: https://fonts.gstatic.com; "
             "script-src 'self' 'unsafe-inline' https://www.paypal.com "
-            "https://www.paypalobjects.com; "
-            "connect-src 'self' https://www.paypal.com https://www.sandbox.paypal.com; "
-            "frame-src https://www.paypal.com https://www.sandbox.paypal.com; "
+            "https://www.paypalobjects.com https://pay.google.com "
+            "https://applepay.cdn-apple.com; "
+            "connect-src 'self' https://www.paypal.com https://www.sandbox.paypal.com "
+            "https://api-m.paypal.com https://api-m.sandbox.paypal.com "
+            "https://pay.google.com; "
+            "frame-src https://www.paypal.com https://www.sandbox.paypal.com "
+            "https://pay.google.com; "
             "base-uri 'self'; "
             "form-action 'self'; "
             "frame-ancestors 'none'",

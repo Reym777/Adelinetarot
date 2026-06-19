@@ -43,6 +43,7 @@ class Booking(Base):
     charge_currency: Mapped[str] = mapped_column(String(3), default="MXN")
     charge_amount: Mapped[float] = mapped_column(Float, default=0.0)
     paypal_order_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    stripe_session_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     payment_method: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     # When the client declared the payment (claim) vs. when AdelineTarot validated

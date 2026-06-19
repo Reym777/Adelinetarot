@@ -23,6 +23,7 @@ from .config import settings
 from .database import init_db
 from .routers import admin as admin_router
 from .routers import bookings as bookings_router
+from .routers import payments as payments_router
 from .security import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 
 logger = logging.getLogger("adelinetarot")
@@ -96,12 +97,32 @@ def public_config() -> dict:
         },
         "paypal_me_handle": settings.paypal_me_handle,
         "paypal_enabled": bool(settings.paypal_client_id),
+        "paypal_advanced": settings.paypal_server_enabled,
+        "paypal_env": settings.paypal_env,
+        "paypal_components": settings.paypal_components,
+        "stripe_enabled": settings.stripe_enabled,
         "mail_enabled": settings.mail_enabled,
     }
 
 
+@app.get(
+    "/.well-known/apple-developer-merchantid-domain-association",
+    include_in_schema=False,
+)
+def apple_pay_domain() -> Response:
+    """Serve the Apple Pay domain-verification file (set via env) so Apple Pay
+    can be enabled for this domain. Returns 404 when not configured."""
+    if not settings.apple_pay_domain_association:
+        return Response(status_code=404)
+    return Response(
+        content=settings.apple_pay_domain_association,
+        media_type="text/plain",
+    )
+
+
 app.include_router(bookings_router.router)
 app.include_router(admin_router.router)
+app.include_router(payments_router.router)
 
 
 # --- Static frontend (convenience for local dev) -----------------------------

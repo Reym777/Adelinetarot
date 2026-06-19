@@ -14,14 +14,19 @@ from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from .. import paypal
 from ..config import settings
 from ..database import get_db
+from ..delivery import ensure_deliverables
+from ..mailer import send_video_link
 from ..models import Booking
 from ..schemas import (
     BookingCreate,
     BookingCreateResponse,
     BookingStatus,
     PaymentConfirm,
+    PayPalCaptureRequest,
+    PayPalOrderResponse,
 )
 from ..security import client_ip, write_rate_limit
 from ..security import read_rate_limit
@@ -161,6 +166,113 @@ def confirm_payment(
         booking.payment_claimed_at = datetime.now(timezone.utc)
         db.commit()
 
+    return BookingStatus(
+        reference=booking.reference, full_name=booking.full_name,
+        status=booking.status, plan=booking.plan, currency=booking.currency,
+        amount=booking.amount, message=_status_message(booking),
+    )
+
+
+@router.post("/{public_token}/paypal/order", response_model=PayPalOrderResponse)
+def create_paypal_order(
+    public_token: str,
+    request: Request,
+    _: None = Depends(write_rate_limit),
+    db: Session = Depends(get_db),
+) -> PayPalOrderResponse:
+    """Create a server-side PayPal order with an authoritative amount.
+
+    The amount is recomputed from the stored booking, never taken from the
+    client, so it cannot be tampered with. Backs the PayPal, Apple Pay and
+    Google Pay buttons.
+    """
+    if not settings.paypal_server_enabled:
+        raise HTTPException(status_code=503, detail="Pago en linea no disponible.")
+
+    booking = (
+        db.query(Booking).filter(Booking.public_token == public_token).first()
+    )
+    if not booking:
+        raise HTTPException(status_code=404, detail="No encontrado")
+    if booking.status == "paid":
+        raise HTTPException(status_code=409, detail="Esta consulta ya esta pagada.")
+
+    try:
+        order = paypal.create_order(
+            booking.charge_amount,
+            booking.charge_currency,
+            booking.reference,
+            "AdelineTarot - Carta astral + Tarot",
+        )
+    except paypal.PayPalError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    booking.paypal_order_id = order["id"]
+    db.commit()
+    return PayPalOrderResponse(id=order["id"])
+
+
+@router.post("/{public_token}/paypal/capture", response_model=BookingStatus)
+def capture_paypal_order(
+    public_token: str,
+    payload: PayPalCaptureRequest,
+    request: Request,
+    _: None = Depends(write_rate_limit),
+    db: Session = Depends(get_db),
+) -> BookingStatus:
+    """Capture a PayPal order server-side and verify the amount before trusting
+    it. The video link is still never returned here."""
+    if payload.website:  # honeypot
+        raise HTTPException(status_code=404, detail="No encontrado")
+    if not settings.paypal_server_enabled:
+        raise HTTPException(status_code=503, detail="Pago en linea no disponible.")
+
+    booking = (
+        db.query(Booking).filter(Booking.public_token == public_token).first()
+    )
+    if not booking:
+        raise HTTPException(status_code=404, detail="No encontrado")
+    # A client may only capture the order that belongs to their own booking.
+    if not booking.paypal_order_id or payload.order_id != booking.paypal_order_id:
+        raise HTTPException(status_code=409, detail="La orden no coincide.")
+    if booking.status == "paid":
+        return BookingStatus(
+            reference=booking.reference, full_name=booking.full_name,
+            status=booking.status, plan=booking.plan, currency=booking.currency,
+            amount=booking.amount, message=_status_message(booking),
+        )
+
+    try:
+        result = paypal.capture_order(payload.order_id)
+    except paypal.PayPalError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    cap_status, cap_currency, cap_amount = paypal.extract_capture(result)
+    if cap_status.upper() != "COMPLETED":
+        raise HTTPException(status_code=402, detail="El pago no se completo.")
+    # Defence in depth: the captured money must match the server-side price.
+    if cap_currency and cap_currency != booking.charge_currency:
+        raise HTTPException(status_code=400, detail="Divisa del pago no valida.")
+    if cap_amount is not None and abs(cap_amount - float(booking.charge_amount)) > 0.01:
+        raise HTTPException(status_code=400, detail="Importe del pago no valido.")
+
+    now = datetime.now(timezone.utc)
+    booking.payment_method = "paypal"
+    booking.payment_claimed_at = now
+    booking.status = "awaiting_validation"
+
+    # Optionally deliver immediately on a verified capture (otherwise Adeline
+    # validates from the admin panel, where the payment shows as PayPal-verified).
+    if settings.paypal_auto_validate:
+        ensure_deliverables(booking)
+        booking.status = "paid"
+        booking.paid_at = booking.paid_at or now
+        ok, detail = send_video_link(booking)
+        if ok:
+            booking.link_emailed_at = now
+        booking.email_status = detail
+
+    db.commit()
     return BookingStatus(
         reference=booking.reference, full_name=booking.full_name,
         status=booking.status, plan=booking.plan, currency=booking.currency,

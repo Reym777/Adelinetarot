@@ -105,6 +105,52 @@ class PaymentConfirm(StrictModel):
 
 
 # --------------------------------------------------------------------------- #
+# PayPal advanced (server-side order + capture)
+# --------------------------------------------------------------------------- #
+class PayPalOrderResponse(BaseModel):
+    id: str
+
+
+class PayPalCaptureRequest(StrictModel):
+    order_id: Annotated[str, Field(min_length=6, max_length=40)]
+    website: Annotated[str, Field(max_length=200)] = ""
+
+    @field_validator("order_id")
+    @classmethod
+    def _valid_order(cls, v: str) -> str:
+        v = _clean(v)
+        if not re.match(r"^[A-Z0-9]{6,40}$", v):
+            raise ValueError("identificador de orden no válido")
+        return v
+
+
+# --------------------------------------------------------------------------- #
+# Stripe (hosted Checkout)
+# --------------------------------------------------------------------------- #
+class StripeCheckoutRequest(StrictModel):
+    public_token: Annotated[str, Field(min_length=10, max_length=64)]
+    website: Annotated[str, Field(max_length=200)] = ""
+
+
+class StripeCheckoutResponse(BaseModel):
+    id: str
+    url: str
+
+
+class StripeConfirmRequest(StrictModel):
+    session_id: Annotated[str, Field(min_length=8, max_length=120)]
+
+    @field_validator("session_id")
+    @classmethod
+    def _valid_session(cls, v: str) -> str:
+        v = _clean(v)
+        if not re.match(r"^cs_[A-Za-z0-9_]+$", v):
+            raise ValueError("identificador de sesión no válido")
+        return v
+
+
+
+# --------------------------------------------------------------------------- #
 # Client-facing status
 #
 # Deliberately omits the video link: it is delivered to the client ONLY by
@@ -145,6 +191,7 @@ class AdminBookingDetail(AdminBookingSummary):
     charge_amount: float
     payment_method: Optional[str] = None
     paypal_order_id: Optional[str] = None
+    stripe_session_id: Optional[str] = None
     payment_claimed_at: Optional[datetime] = None
     link_emailed_at: Optional[datetime] = None
     email_status: Optional[str] = None

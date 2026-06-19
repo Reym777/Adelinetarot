@@ -71,6 +71,7 @@ def _ensure_sqlite_columns() -> None:
         "payment_claimed_at": "DATETIME",
         "link_emailed_at": "DATETIME",
         "email_status": "VARCHAR(160)",
+        "stripe_session_id": "VARCHAR(80)",
     }
     with engine.begin() as conn:
         for name, ddl in needed.items():

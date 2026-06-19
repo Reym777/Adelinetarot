@@ -36,10 +36,15 @@
     paypalMeUrl: "",
     paymentUrl: "",
     paymentNote: "",
+    paypalAdvanced: false,
+    paypalEnv: "live",
+    paypalComponents: "buttons",
+    stripeEnabled: false,
     paid: false,
   };
 
   var paypalScriptLoaded = "";
+  var STRIPE_LABEL = "💳 Pagar con tarjeta · Apple Pay · Google Pay";
 
   // -------------------- utilidades --------------------
   function $(id) { return document.getElementById(id); }
@@ -105,6 +110,10 @@
           $("amtMxn").textContent = String(cfg.prices.mxn);
           $("amtPen").textContent = String(cfg.prices.pen);
         }
+        state.paypalAdvanced = !!cfg.paypal_advanced;
+        state.paypalEnv = cfg.paypal_env || "live";
+        state.paypalComponents = cfg.paypal_components || "buttons";
+        state.stripeEnabled = !!cfg.stripe_enabled;
       })
       .catch(function () { /* valores por defecto del HTML */ });
   }
@@ -196,8 +205,15 @@
     var payNote = $("payNote");
     if (payNote) { payNote.textContent = state.paymentNote || ""; }
 
+    var stripeBox = $("stripeBox");
+    if (stripeBox) { stripeBox.classList.toggle("hidden", !state.stripeEnabled); }
+    var stripeBtn = $("stripeBtn");
+    if (stripeBtn) { stripeBtn.disabled = false; stripeBtn.textContent = STRIPE_LABEL; }
+
     var note = $("paypalNote");
     note.innerHTML = "";
+
+    resetWallets();
 
     if (state.paypalClientId) {
       renderPayPalButtons();
@@ -212,9 +228,11 @@
   }
 
   function loadPayPalSDK(clientId, currency) {
+    var components = state.paypalComponents || "buttons";
+    var key = currency + "|" + components;
     return new Promise(function (resolve, reject) {
-      if (paypalScriptLoaded === currency && window.paypal) { resolve(); return; }
-      // Si ya había un SDK con otra divisa, lo quitamos para recargar.
+      if (paypalScriptLoaded === key && window.paypal) { resolve(); return; }
+      // Si ya había un SDK con otra divisa/componentes, lo quitamos para recargar.
       var old = document.getElementById("paypal-sdk");
       if (old) { old.remove(); try { delete window.paypal; } catch (e) { window.paypal = undefined; } }
       var s = document.createElement("script");
@@ -223,47 +241,234 @@
         "https://www.paypal.com/sdk/js?client-id=" +
         encodeURIComponent(clientId) +
         "&currency=" + encodeURIComponent(currency) +
-        "&intent=capture&components=buttons";
-      s.onload = function () { paypalScriptLoaded = currency; resolve(); };
+        "&intent=capture&components=" + encodeURIComponent(components) +
+        "&enable-funding=card";
+      s.onload = function () { paypalScriptLoaded = key; resolve(); };
       s.onerror = function () { reject(new Error("No se pudo cargar PayPal.")); };
       document.head.appendChild(s);
     });
   }
 
+  function loadScript(src) {
+    return new Promise(function (resolve, reject) {
+      if (document.querySelector('script[src="' + src + '"]')) { resolve(); return; }
+      var s = document.createElement("script");
+      s.src = src;
+      s.onload = function () { resolve(); };
+      s.onerror = function () { reject(new Error("No se pudo cargar " + src)); };
+      document.head.appendChild(s);
+    });
+  }
+
+  // -------------------- PayPal avanzado (orden + captura en servidor) --------------------
+  function paypalOrderRequest() {
+    return api(
+      "/api/bookings/" + encodeURIComponent(state.publicToken) + "/paypal/order",
+      { method: "POST", body: "{}" }
+    ).then(function (o) { return o.id; });
+  }
+
+  function paypalCaptureRequest(orderId) {
+    return api(
+      "/api/bookings/" + encodeURIComponent(state.publicToken) + "/paypal/capture",
+      { method: "POST", body: JSON.stringify({ order_id: orderId, website: "" }) }
+    );
+  }
+
+  function finishPaid(res) {
+    state.paid = true;
+    showPending(res);
+  }
+
   function renderPayPalButtons() {
     var container = $("paypal-buttons");
     container.innerHTML = "";
+    var advanced = state.paypalAdvanced;
     loadPayPalSDK(state.paypalClientId, state.chargeCurrency)
       .then(function () {
         window.paypal
           .Buttons({
             style: { color: "gold", shape: "pill", label: "paypal" },
-            createOrder: function (data, actions) {
-              return actions.order.create({
-                purchase_units: [
-                  {
-                    description: "AdelineTarot · Carta astral + Tarot",
-                    amount: {
-                      value: Number(state.chargeAmount).toFixed(2),
-                      currency_code: state.chargeCurrency,
-                    },
-                  },
-                ],
-              });
-            },
-            onApprove: function (data, actions) {
-              return actions.order.capture().then(function (details) {
-                claimPayment("paypal", (details && details.id) || data.orderID);
-              });
-            },
+            createOrder: advanced
+              ? function () { return paypalOrderRequest(); }
+              : function (data, actions) {
+                  return actions.order.create({
+                    purchase_units: [
+                      {
+                        description: "AdelineTarot · Carta astral + Tarot",
+                        amount: {
+                          value: Number(state.chargeAmount).toFixed(2),
+                          currency_code: state.chargeCurrency,
+                        },
+                      },
+                    ],
+                  });
+                },
+            onApprove: advanced
+              ? function (data) {
+                  return paypalCaptureRequest(data.orderID).then(finishPaid);
+                }
+              : function (data, actions) {
+                  return actions.order.capture().then(function (details) {
+                    claimPayment("paypal", (details && details.id) || data.orderID);
+                  });
+                },
             onError: function () {
-              alertBox($("payAlert"), "PayPal devolvió un error. Intenta con PayPal.Me.");
+              alertBox($("payAlert"), "PayPal devolvió un error. Intenta con otro método.");
             },
           })
           .render("#paypal-buttons");
+        if (advanced) { setupWallets(); }
       })
       .catch(function (err) {
-        alertBox($("paypalNote"), err.message + " Usa PayPal.Me y “Ya pagué”.");
+        alertBox($("paypalNote"), err.message + " Usa “Pagar ahora” y “He realizado el pago”.");
+      });
+  }
+
+  // -------------------- Apple Pay / Google Pay (vía PayPal) --------------------
+  function resetWallets() {
+    ["applepay-button", "googlepay-button"].forEach(function (id) {
+      var el = $(id);
+      if (el) { el.innerHTML = ""; el.classList.add("hidden"); }
+    });
+    var w = $("walletButtons");
+    if (w) { w.classList.add("hidden"); }
+  }
+
+  function showWallets() {
+    var w = $("walletButtons");
+    if (w) { w.classList.remove("hidden"); }
+  }
+
+  function setupWallets() {
+    try { setupApplePay(); } catch (e) { /* sin Apple Pay */ }
+    try { setupGooglePay(); } catch (e) { /* sin Google Pay */ }
+  }
+
+  function setupApplePay() {
+    if (!window.paypal || !window.paypal.Applepay) { return; }
+    if (typeof window.ApplePaySession === "undefined" || !window.ApplePaySession) { return; }
+    try { if (!window.ApplePaySession.canMakePayments()) { return; } } catch (e) { return; }
+
+    var applepay = window.paypal.Applepay();
+    applepay.config()
+      .then(function (cfg) {
+        if (!cfg || !cfg.isEligible) { return; }
+        var box = $("applepay-button");
+        box.innerHTML = '<apple-pay-button buttonstyle="black" type="buy" locale="es-ES"></apple-pay-button>';
+        box.classList.remove("hidden");
+        showWallets();
+        box.querySelector("apple-pay-button").addEventListener("click", function () {
+          onApplePayClicked(applepay, cfg);
+        });
+      })
+      .catch(function () { /* sin Apple Pay */ });
+  }
+
+  function onApplePayClicked(applepay, cfg) {
+    var session;
+    try {
+      session = new window.ApplePaySession(4, {
+        countryCode: cfg.countryCode,
+        currencyCode: state.chargeCurrency,
+        merchantCapabilities: cfg.merchantCapabilities,
+        supportedNetworks: cfg.supportedNetworks,
+        requiredBillingContactFields: ["postalAddress", "name"],
+        total: { label: "AdelineTarot", amount: Number(state.chargeAmount).toFixed(2) },
+      });
+    } catch (e) {
+      alertBox($("payAlert"), "Apple Pay no está disponible en este dispositivo.");
+      return;
+    }
+
+    session.onvalidatemerchant = function (event) {
+      applepay.validateMerchant({ validationUrl: event.validationURL })
+        .then(function (payload) { session.completeMerchantValidation(payload.merchantSession); })
+        .catch(function () { session.abort(); });
+    };
+    session.onpaymentauthorized = function (event) {
+      paypalOrderRequest()
+        .then(function (orderId) {
+          return applepay.confirmOrder({
+            orderId: orderId,
+            token: event.payment.token,
+            billingContact: event.payment.billingContact,
+          }).then(function () { return paypalCaptureRequest(orderId); });
+        })
+        .then(function (res) {
+          session.completePayment(window.ApplePaySession.STATUS_SUCCESS);
+          finishPaid(res);
+        })
+        .catch(function (err) {
+          session.completePayment(window.ApplePaySession.STATUS_FAILURE);
+          alertBox($("payAlert"), "Apple Pay: " + (err.message || "no se pudo completar."));
+        });
+    };
+    session.oncancel = function () { /* cancelado por el usuario */ };
+    session.begin();
+  }
+
+  function setupGooglePay() {
+    if (!window.paypal || !window.paypal.Googlepay) { return; }
+    loadScript("https://pay.google.com/gp/p/js/pay.js")
+      .then(function () {
+        var googlepay = window.paypal.Googlepay();
+        return googlepay.config().then(function (cfg) {
+          if (!cfg || !cfg.isEligible || !window.google || !google.payments) { return; }
+          var env = state.paypalEnv === "live" ? "PRODUCTION" : "TEST";
+          var client = new google.payments.api.PaymentsClient({ environment: env });
+          return client.isReadyToPay({
+            apiVersion: cfg.apiVersion,
+            apiVersionMinor: cfg.apiVersionMinor,
+            allowedPaymentMethods: cfg.allowedPaymentMethods,
+          }).then(function (ready) {
+            if (!ready || !ready.result) { return; }
+            var btn = client.createButton({
+              onClick: function () { onGooglePayClicked(googlepay, cfg, client); },
+              buttonType: "pay",
+              buttonSizeMode: "fill",
+            });
+            var box = $("googlepay-button");
+            box.innerHTML = "";
+            box.appendChild(btn);
+            box.classList.remove("hidden");
+            showWallets();
+          });
+        });
+      })
+      .catch(function () { /* sin Google Pay */ });
+  }
+
+  function onGooglePayClicked(googlepay, cfg, client) {
+    client.loadPaymentData({
+      apiVersion: cfg.apiVersion,
+      apiVersionMinor: cfg.apiVersionMinor,
+      allowedPaymentMethods: cfg.allowedPaymentMethods,
+      merchantInfo: cfg.merchantInfo,
+      transactionInfo: {
+        countryCode: cfg.countryCode,
+        currencyCode: state.chargeCurrency,
+        totalPriceStatus: "FINAL",
+        totalPrice: Number(state.chargeAmount).toFixed(2),
+      },
+    })
+      .then(function (paymentData) {
+        return paypalOrderRequest().then(function (orderId) {
+          return googlepay.confirmOrder({
+            orderId: orderId,
+            paymentMethodData: paymentData.paymentMethodData,
+          }).then(function (conf) {
+            if (conf.status === "APPROVED" || conf.status === "PAYER_ACTION_REQUIRED") {
+              return paypalCaptureRequest(orderId);
+            }
+            throw new Error("pago no aprobado");
+          });
+        });
+      })
+      .then(finishPaid)
+      .catch(function (err) {
+        if (err && err.statusCode === "CANCELED") { return; }
+        alertBox($("payAlert"), "Google Pay: " + (err.message || "no se pudo completar."));
       });
   }
 
@@ -294,6 +499,7 @@
 
   // -------------------- confirmación (pendiente de validación) --------------------
   function showPending(res) {
+    $("stepForm").classList.add("hidden");
     $("stepPay").classList.add("hidden");
     $("stepDone").classList.remove("hidden");
 
@@ -313,12 +519,68 @@
     $("stepDone").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  // -------------------- pago con Stripe (tarjeta / Apple Pay / Google Pay) --------------------
+  function startStripeCheckout() {
+    if (state.paid) { return; }
+    var alertC = $("payAlert");
+    clearAlert(alertC);
+    var btn = $("stripeBtn");
+    btn.disabled = true;
+    btn.textContent = "Redirigiendo a pago seguro…";
+    api("/api/stripe/checkout", {
+      method: "POST",
+      body: JSON.stringify({ public_token: state.publicToken, website: "" }),
+    })
+      .then(function (res) {
+        if (res && res.url) {
+          window.location.href = res.url;
+        } else {
+          throw new Error("No se pudo iniciar el pago.");
+        }
+      })
+      .catch(function (err) {
+        btn.disabled = false;
+        btn.textContent = STRIPE_LABEL;
+        alertBox(alertC, err.message || "No se pudo iniciar el pago con tarjeta.");
+      });
+  }
+
+  // Al volver de Stripe (?paid=stripe&session_id=...) confirmamos el pago en el
+  // servidor; el enlace nunca se muestra aquí (llega por correo tras validar).
+  function handleStripeReturn() {
+    var params = new URLSearchParams(location.search);
+    if (params.get("paid") !== "stripe") { return; }
+    var sid = params.get("session_id");
+    if (window.history && history.replaceState) {
+      history.replaceState({}, document.title, location.pathname);
+    }
+    if (!sid) { return; }
+    api("/api/stripe/confirm", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sid }),
+    })
+      .then(function (res) {
+        state.paid = true;
+        state.reference = res.reference || "";
+        state.fullName = res.full_name || "";
+        showPending(res);
+      })
+      .catch(function () {
+        $("stepForm").classList.add("hidden");
+        $("stepPay").classList.add("hidden");
+        $("stepDone").classList.remove("hidden");
+        $("stepDone").scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+  }
+
   // -------------------- enlaces / arranque --------------------
   function wireControls() {
     $("bookingForm").addEventListener("submit", handleSubmit);
     $("confirmPaidBtn").addEventListener("click", function () {
       claimPayment("paypalme", null);
     });
+    var stripeBtn = $("stripeBtn");
+    if (stripeBtn) { stripeBtn.addEventListener("click", startStripeCheckout); }
     $("backToForm").addEventListener("click", function (e) {
       e.preventDefault();
       $("stepPay").classList.add("hidden");
@@ -333,5 +595,6 @@
     wireControls();
     wirePlans();
     loadConfig();
+    handleStripeReturn();
   });
 })();

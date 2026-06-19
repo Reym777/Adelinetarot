@@ -36,6 +36,7 @@ def _to_detail(b: Booking) -> AdminBookingDetail:
         status=b.status, plan=b.plan, currency=b.currency, amount=b.amount,
         charge_currency=b.charge_currency, charge_amount=b.charge_amount,
         payment_method=b.payment_method, paypal_order_id=b.paypal_order_id,
+        stripe_session_id=b.stripe_session_id,
         payment_claimed_at=b.payment_claimed_at, link_emailed_at=b.link_emailed_at,
         email_status=b.email_status,
         created_at=b.created_at, paid_at=b.paid_at,

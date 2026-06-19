@@ -283,6 +283,16 @@ section { padding: 64px 0; }
 .pay-sub { text-align: center; color: var(--muted); margin-bottom: 24px; }
 .paypal-box { max-width: 460px; margin: 0 auto; }
 #paypal-buttons { margin: 18px 0; min-height: 10px; }
+.wallet-buttons { margin: 18px 0 0; }
+.wallet-btn { margin-bottom: 10px; min-height: 46px; }
+.wallet-btn.hidden, .wallet-buttons.hidden { display: none; }
+apple-pay-button {
+  display: block; width: 100%;
+  --apple-pay-button-width: 100%;
+  --apple-pay-button-height: 46px;
+  --apple-pay-button-border-radius: 12px;
+}
+#googlepay-button > div, #googlepay-button button { width: 100% !important; }
 .divider {
   display: flex; align-items: center; gap: 14px;
   color: var(--muted); margin: 22px 0; font-size: .95rem;

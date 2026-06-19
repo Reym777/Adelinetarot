@@ -74,6 +74,19 @@ class Settings(BaseSettings):
     # in-page PayPal buttons. The PayPal.Me handle powers the manual fallback.
     paypal_client_id: str = ""
     paypal_me_handle: str = "adelinetarot"
+    # Advanced (server-side) PayPal. Adding the REST secret unlocks real, verified
+    # captures done from the backend (the amount is never trusted from the client)
+    # plus the Apple Pay and Google Pay buttons. ``paypal_env`` MUST match the
+    # credentials ("live" for a live client id, "sandbox" for a sandbox one).
+    paypal_secret: str = ""
+    paypal_env: str = "live"
+    # When True, a verified PayPal capture immediately delivers the video link by
+    # email. Left False to honour the manual-validation workflow (AdelineTarot
+    # still confirms from the admin panel, but sees the payment is PayPal-verified).
+    paypal_auto_validate: bool = False
+    # Apple Pay domain verification file contents (provided by PayPal). Served at
+    # /.well-known/apple-developer-merchantid-domain-association when set.
+    apple_pay_domain_association: str = ""
     # Optional override: a ready-made payment destination (e.g. a Stripe Payment
     # Link or a custom PayPal.Me). When set it is used as-is for the "Pay" button
     # instead of building a PayPal.Me URL from the handle.
@@ -85,6 +98,20 @@ class Settings(BaseSettings):
     price_pen: float = 20.0
     # PayPal cannot settle in PEN; the sol plan is charged as this USD value.
     price_pen_as_usd: float = 6.0
+
+    # Payment — Stripe (hosted Checkout). Adding the secret key enables a
+    # "Pay by card / Apple Pay / Google Pay" button: the customer is redirected
+    # to Stripe's hosted page (which natively offers Apple Pay and Google Pay on
+    # eligible devices) and sent back here. The amount is authoritative
+    # (recomputed server-side) and Stripe handles all card data (PCI-compliant).
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    # When True a verified Stripe payment immediately delivers the link by email;
+    # left False to honour the manual-validation workflow.
+    stripe_auto_validate: bool = False
+    # Public base URL used to build Stripe return URLs. When empty it is derived
+    # from RENDER_EXTERNAL_HOSTNAME or the incoming request.
+    public_base_url: str = ""
 
     # Email (SMTP) — the private video link is delivered ONLY by email, and only
     # after AdelineTarot validates the payment. Credentials come from the
@@ -149,6 +176,31 @@ class Settings(BaseSettings):
     def mail_enabled(self) -> bool:
         """True when SMTP is configured enough to attempt sending."""
         return bool(self.smtp_host and self.effective_sender)
+
+    @property
+    def paypal_api_base(self) -> str:
+        """REST API root, matching the configured environment."""
+        if self.paypal_env.strip().lower() == "live":
+            return "https://api-m.paypal.com"
+        return "https://api-m.sandbox.paypal.com"
+
+    @property
+    def paypal_server_enabled(self) -> bool:
+        """True when server-side capture (and Apple/Google Pay) can be used."""
+        return bool(self.paypal_client_id and self.paypal_secret)
+
+    @property
+    def paypal_components(self) -> str:
+        """JS SDK components to load (Apple/Google Pay need the secret)."""
+        comps = ["buttons"]
+        if self.paypal_server_enabled:
+            comps.extend(["applepay", "googlepay"])
+        return ",".join(comps)
+
+    @property
+    def stripe_enabled(self) -> bool:
+        """True when Stripe hosted Checkout (card + Apple/Google Pay) is usable."""
+        return bool(self.stripe_secret_key)
 
 
 @lru_cache
