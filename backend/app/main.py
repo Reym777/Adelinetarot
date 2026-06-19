@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -106,6 +106,15 @@ app.include_router(admin_router.router)
 # --- Static frontend (convenience for local dev) -----------------------------
 if settings.serve_frontend and (settings.frontend_path / "index.html").exists():
     frontend = settings.frontend_path
+    assets_dir = frontend / "assets"
+
+    # Mount ONLY the assets folder — never the site root. A catch-all mount at
+    # "/" would swallow every unmatched /api/* request and let StaticFiles answer
+    # "405 Method Not Allowed" on POST (e.g. a stray trailing slash). With assets
+    # scoped here, unknown /api paths fall through to FastAPI's JSON 404 and
+    # Starlette's automatic trailing-slash redirect (307, method preserved).
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
@@ -115,7 +124,15 @@ if settings.serve_frontend and (settings.frontend_path / "index.html").exists():
     def admin_page() -> FileResponse:
         return FileResponse(frontend / "admin.html")
 
-    app.mount("/", StaticFiles(directory=str(frontend), html=False), name="frontend")
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        # Tiny gold moon so browsers stop logging 404s for the favicon.
+        svg = (
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+            "<circle cx='16' cy='16' r='13' fill='#e8c66b'/>"
+            "<circle cx='11' cy='13' r='10' fill='#0c0a1d'/></svg>"
+        )
+        return Response(content=svg, media_type="image/svg+xml")
 else:
     @app.get("/", include_in_schema=False)
     def root_info() -> dict:
