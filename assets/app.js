@@ -13,12 +13,12 @@
   }
   var API_BASE = resolveApiBase();
 
-  // Aviso para el desarrollador: GitHub Pages no ejecuta el backend.
+  // Aviso para el desarrollador: GitHub Pages (estático) no ejecuta el backend.
   if (!API_BASE && !/^(localhost|127\.0\.0\.1|\[?::1\]?)$/.test(location.hostname)) {
-    console.warn(
-      "[AdelineTarot] Sin backend configurado. En GitHub Pages define " +
-      '<meta name="adeline-api-base" content="https://tu-backend"> con la URL publica del backend.'
-    );
+    var warnMsg = "[AdelineTarot] Sin backend configurado o backend estático detectado. Define <meta name=\"adeline-api-base\" content=\"https://tu-backend\"> o asegúrate de desplegar como Web Service (ej: en Render).";
+    console.warn(warnMsg);
+    // document.addEventListener no ha saltado aùn aquí, pero DOM puede estar parcial, lo metemos en un timeout o lo dejamos
+    setTimeout(function() { logDebug("WARNING: " + warnMsg); }, 500); 
   }
 
   var state = {
@@ -55,6 +55,18 @@
   }
   function clearAlert(container) { container.innerHTML = ""; }
 
+  function logDebug(msg) {
+    var box = $("debugLogBox");
+    if (!box) return;
+    box.classList.remove("hidden");
+    var div = document.createElement("div");
+    div.style.borderBottom = "1px solid #333";
+    div.style.padding = "4px 0";
+    div.textContent = "> " + (typeof msg === "string" ? msg : JSON.stringify(msg));
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+  }
+
   function api(path, options) {
     options = options || {};
     options.headers = Object.assign(
@@ -65,13 +77,15 @@
       // Si el servidor responde con HTML en lugar de JSON (e.g. hosting estático mal configurado)
       var cType = res.headers.get("content-type") || "";
       if (res.ok && cType.indexOf("application/json") === -1) {
-        throw new Error("Error de servidor: La API no devolvió JSON. ¿El backend de Python está ejecutándose?");
+        logDebug("ERROR: La API " + path + " devolvió " + cType + " en lugar de JSON. Probablemente el servidor estático atrapó la petición y el backend no se está ejecutando.");
+        throw new Error("No se pudo conectar con el motor de reservas. Verifique la consola inferior.");
       }
       return res
         .json()
         .catch(function () { return {}; })
         .then(function (body) {
           if (!res.ok) {
+            logDebug("API " + path + " (" + res.status + "): " + JSON.stringify(body));
             var msg = body && body.detail ? body.detail : "Ocurrió un error (" + res.status + ").";
             if (body && body.errors && body.errors.length) {
               msg = body.errors.map(function (e) { return e.msg; }).join(" · ");
@@ -80,6 +94,13 @@
           }
           return body;
         });
+    }).catch(function(err) {
+      if (err instanceof TypeError && err.message.indexOf("Failed to fetch") !== -1 || err.message.indexOf("NetworkError") !== -1) {
+        logDebug("ERROR de Red: El backend en " + API_BASE + " no responde o hay un problema de CORS.");
+      } else {
+        logDebug("ERROR: " + err.message);
+      }
+      throw err;
     });
   }
 
